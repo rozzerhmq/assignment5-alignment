@@ -47,29 +47,32 @@ def evaluate_vllm(
 
         examples = [json.loads(line.strip()) for line in test_file]
 
-        model_prompts = [
-            re.sub(r"\{question\}", example["question"], r1_zero_prompt)
-            for example in examples
-        ]
+        batch_size = 10
+        for i in range(0, len(examples), batch_size):
+            batch_examples = examples[i : i + batch_size]
+            model_prompts = [
+                re.sub(r"\{question\}", example["question"], r1_zero_prompt)
+                for example in batch_examples
+            ]
 
-        response_outputs = vllm_model.generate(
-            model_prompts, sampling_params=eval_sampling_params
-        )
-
-        assert len(response_outputs) == len(examples)
-
-        for example, response_output in zip(examples, response_outputs):
-            response_text = response_output.outputs[0].text
-            reward = r1_zero_reward_fn(response_text, example["answer"])
-
-            result = EvaluationResult(
-                prompt=response_output.prompt,
-                response=response_text,
-                golden=example["answer"],
-                rewards=reward,
+            response_outputs = vllm_model.generate(
+                model_prompts, sampling_params=eval_sampling_params
             )
 
-            results.append(result)
+            assert len(response_outputs) == len(batch_examples)
+
+            for example, response_output in zip(batch_examples, response_outputs):
+                response_text = response_output.outputs[0].text
+                reward = r1_zero_reward_fn(response_text, example["answer"])
+
+                result = EvaluationResult(
+                    prompt=response_output.prompt,
+                    response=response_text,
+                    golden=example["answer"],
+                    rewards=reward,
+                )
+
+                results.append(result)
 
     with open("evaluation_results.jsonl", "w") as outfile:
         for result in results:
