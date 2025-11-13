@@ -22,4 +22,4 @@ def read_results(filename):
 
 
 if __name__ == "__main__":
-    read_results("gsm8k_evaluation_results.jsonl")
+    read_results("evaluation_results.jsonl")
