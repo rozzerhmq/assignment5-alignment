@@ -37,18 +37,19 @@ def evaluate_vllm(
     analysis in subsequent problems.
 
     """
-    results: List[EvaluationResult] = []
-
     with (
         open("cs336_alignment/prompts/r1_zero.prompt", "r") as prompt_file,
         open("data/gsm8k/test.jsonl", "r") as test_file,
+        open("evaluation_results.jsonl", "w") as outfile,
     ):
         r1_zero_prompt = prompt_file.read()
 
         examples = [json.loads(line.strip()) for line in test_file]
 
-        batch_size = 10
+        batch_size = 20
+        total_batches = (len(examples) + batch_size - 1) // batch_size
         for i in range(0, len(examples), batch_size):
+            print(f"Processing batch {i // batch_size + 1}/{total_batches}")
             batch_examples = examples[i : i + batch_size]
             model_prompts = [
                 re.sub(r"\{question\}", example["question"], r1_zero_prompt)
@@ -72,11 +73,7 @@ def evaluate_vllm(
                     rewards=reward,
                 )
 
-                results.append(result)
-
-    with open("evaluation_results.jsonl", "w") as outfile:
-        for result in results:
-            outfile.write(json.dumps(result.__dict__) + "\n")
+                outfile.write(json.dumps(result.__dict__) + "\n")
 
 
 if __name__ == "__main__":
