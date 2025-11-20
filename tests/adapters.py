@@ -33,42 +33,43 @@ def run_tokenize_prompt_and_output(
                 a mask on the response tokens in `labels`.
     """
     assert len(prompt_strs) == len(output_strs)
-    batch_size = len(prompt_strs)
 
-    tokenized_prompts = [tokenizer.tokenize(prompt_str) for prompt_str in prompt_strs]
-    tokenized_outputs = [tokenizer.tokenize(output_str) for output_str in output_strs]
-    max_prompt_and_output_len = max(
-        len(tokenized_prompt) + len(tokenized_output)
-        for tokenized_prompt, tokenized_output in zip(
-            tokenized_prompts, tokenized_outputs
-        )
-    )
-    tokenized_inputs = [
-        tokenized_prompt + tokenized_output[:-1]
-        for tokenized_prompt, tokenized_output in zip(
-            tokenized_prompts, tokenized_outputs
+    prompts_token_ids = [
+        tokenizer.encode(prompt_str, add_special_tokens=False)
+        for prompt_str in prompt_strs
+    ]
+    outputs_token_ids = [
+        tokenizer.encode(output_str, add_special_tokens=False)
+        for output_str in output_strs
+    ]
+
+    prompts_and_outputs_token_ids = [
+        prompt_token_ids + output_token_ids
+        for prompt_token_ids, output_token_ids in zip(
+            prompts_token_ids, outputs_token_ids
         )
     ]
-    input_tensors = [torch.tensor(token_input) for token_input in tokenized_inputs]
-    input_results = pad_sequence(
-        input_tensors, batch_first=True, padding_value=tokenizer.pad_token_id
-    )
 
-    tokenized_labels = [
-        tokenized_prompt[1:] + tokenized_output
-        for tokenized_prompt, tokenized_output in zip(
-            tokenized_prompts, tokenized_outputs
-        )
+    # Get the padding token ID
+    pad_token_id = tokenizer.pad_token_id
+    if pad_token_id is None:
+        # Fallback if tokenizer doesn't have a pad_token_id
+        pad_token_id = 0
+
+    prompts_and_outputs_token_ids_tensors = [
+        torch.tensor(ids) for ids in prompts_and_outputs_token_ids
     ]
-    label_tensors = [torch.tensor(token_label) for token_label in tokenized_labels]
-    label_results = pad_sequence(
-        label_tensors, batch_first=True, padding_value=tokenizer.pad_token_id
-    )
 
-    response_mask = label_results != tokenizer.pad_token_id
+    padded_sequences = pad_sequence(prompts_and_outputs_token_ids_tensors, batch_first=True, padding_value=pad_token_id)
+
+    input_results = padded_sequences[:, :-1]
+    label_results = padded_sequences[:, 1:]
+
+    response_mask = label_results != pad_token_id
     for i, mask in enumerate(response_mask):
-        prompt_len = len(tokenized_prompts[i])
-        mask[: prompt_len - 1] = False
+        prompt_len = len(prompts_token_ids[i])
+        if prompt_len > 0:
+            mask[: prompt_len - 1] = False
 
     return {
         "input_ids": input_results,
