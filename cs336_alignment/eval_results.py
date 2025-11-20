@@ -1,4 +1,5 @@
 import pandas as pd
+import sys
 
 format_reward_column = "format_reward"
 answer_reward_column = "answer_reward"
@@ -21,5 +22,12 @@ def read_results(filename):
     print(f"Average reward: {df[reward_column].mean()}")
 
 
+def main():
+    if len(sys.argv) > 1:
+        filename = sys.argv[1]
+    else:
+        filename = "evaluation_results.jsonl"
+    read_results(filename)
+
 if __name__ == "__main__":
-    read_results("evaluation_results.jsonl")
+    main()

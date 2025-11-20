@@ -1,23 +1,10 @@
 from typing import Callable, List
 
 from vllm import LLM, SamplingParams
+from cs336_alignment import EvaluationResult
 from drgrpo_grader import r1_zero_reward_fn
 
 import re, json
-
-
-class EvaluationResult:
-    """
-    A class to store the results of an evaluation.
-    """
-
-    def __init__(
-        self, prompt: str, response: str, golden: str, rewards: dict[str, float]
-    ):
-        self.prompt = prompt
-        self.response = response
-        self.golden = golden
-        self.rewards = rewards
 
 
 def evaluate_vllm(
@@ -37,10 +24,12 @@ def evaluate_vllm(
     analysis in subsequent problems.
 
     """
+    model_name = vllm_model.llm_engine.model_config.model
+    output_filename = f"{model_name.replace('/', '_')}_evaluation_results.jsonl"
     with (
         open("cs336_alignment/prompts/r1_zero.prompt", "r") as prompt_file,
         open("data/gsm8k/test.jsonl", "r") as test_file,
-        open("evaluation_results.jsonl", "w") as outfile,
+        open(output_filename, "w") as outfile,
     ):
         r1_zero_prompt = prompt_file.read()
 
@@ -75,9 +64,13 @@ def evaluate_vllm(
 
                 outfile.write(json.dumps(result.__dict__) + "\n")
 
-
-if __name__ == "__main__":
-    llm = LLM(model="Qwen/Qwen2.5-Math-1.5B")
+def main():
+    # llm = LLM(model="Qwen/Qwen2.5-Math-1.5B")
+    llm = LLM(
+        model="Qwen/Qwen3-4B-Base",
+        gpu_memory_utilization=0.85,
+        max_model_len=2048,
+    )
 
     prompts = [
         "What is 1+1?",
@@ -95,3 +88,6 @@ if __name__ == "__main__":
         prompts=prompts,
         eval_sampling_params=sampling_params,
     )
+
+if __name__ == "__main__":
+    main()
