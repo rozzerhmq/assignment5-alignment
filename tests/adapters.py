@@ -50,22 +50,16 @@ def run_tokenize_prompt_and_output(
         )
     ]
 
-    # Get the padding token ID
-    pad_token_id = tokenizer.pad_token_id
-    if pad_token_id is None:
-        # Fallback if tokenizer doesn't have a pad_token_id
-        pad_token_id = 0
-
     prompts_and_outputs_token_ids_tensors = [
         torch.tensor(ids) for ids in prompts_and_outputs_token_ids
     ]
 
-    padded_sequences = pad_sequence(prompts_and_outputs_token_ids_tensors, batch_first=True, padding_value=pad_token_id)
+    padded_sequences = pad_sequence(prompts_and_outputs_token_ids_tensors, batch_first=True, padding_value=tokenizer.pad_token_id)
 
     input_results = padded_sequences[:, :-1]
     label_results = padded_sequences[:, 1:]
 
-    response_mask = label_results != pad_token_id
+    response_mask = label_results != tokenizer.pad_token_id
     for i, mask in enumerate(response_mask):
         prompt_len = len(prompts_token_ids[i])
         if prompt_len > 0:
