@@ -54,7 +54,11 @@ def run_tokenize_prompt_and_output(
         torch.tensor(ids) for ids in prompts_and_outputs_token_ids
     ]
 
-    padded_sequences = pad_sequence(prompts_and_outputs_token_ids_tensors, batch_first=True, padding_value=tokenizer.pad_token_id)
+    padded_sequences = pad_sequence(
+        prompts_and_outputs_token_ids_tensors,
+        batch_first=True,
+        padding_value=tokenizer.pad_token_id,
+    )
 
     input_results = padded_sequences[:, :-1]
     label_results = padded_sequences[:, 1:]
@@ -120,7 +124,10 @@ def run_compute_group_normalized_rewards(
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """Get the entropy of the logits (i.e., entropy of the final dimension)."""
-    raise NotImplementedError
+    log_p = logits - logits.logsumexp(-1, keepdim=True)
+    p = log_p.exp()
+    entropy = -(p * log_p).sum(-1)
+    return entropy
 
 
 def run_get_response_log_probs(
@@ -152,7 +159,16 @@ def run_get_response_log_probs(
                 we have not masked out the token indices corresponding to the prompt
                 or padding; that is done in the train loop.
     """
-    raise NotImplementedError
+    logits = model(input_ids=input_ids, labels=labels).logits
+    log_p = logits - logits.logsumexp(-1, keepdim=True)
+
+    if return_token_entropy:
+        token_entropy = run_compute_entropy(logits)
+
+    return {
+        "log_probs": log_p,
+        "token_entropy": token_entropy,
+    }
 
 
 def run_compute_naive_policy_gradient_loss(
@@ -307,7 +323,7 @@ def run_masked_normalize(
         torch.Tensor, the normalized sum, where masked elements
             (mask=0) don't contribute to the sum.
     """
-    raise NotImplementedError
+    return (tensor * mask).sum(dim=dim) / normalize_constant
 
 
 """
