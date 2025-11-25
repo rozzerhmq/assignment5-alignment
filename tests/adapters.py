@@ -4,6 +4,7 @@ import os
 from typing import Any, Callable, Literal
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
@@ -34,17 +35,11 @@ def run_tokenize_prompt_and_output(
     """
     assert len(prompt_strs) == len(output_strs)
 
-    prompts_token_ids = [
-        tokenizer.encode(prompt_str, add_special_tokens=False)
-        for prompt_str in prompt_strs
-    ]
-    outputs_token_ids = [
-        tokenizer.encode(output_str, add_special_tokens=False)
-        for output_str in output_strs
-    ]
+    prompts_token_ids = [tokenizer.encode(prompt_str) for prompt_str in prompt_strs]
+    outputs_token_ids = [tokenizer.encode(output_str) for output_str in output_strs]
 
     prompts_and_outputs_token_ids = [
-        prompt_token_ids + output_token_ids
+        (prompt_token_ids + output_token_ids + [tokenizer.eos_token_id])
         for prompt_token_ids, output_token_ids in zip(
             prompts_token_ids, outputs_token_ids
         )
@@ -68,6 +63,10 @@ def run_tokenize_prompt_and_output(
         prompt_len = len(prompts_token_ids[i])
         if prompt_len > 0:
             mask[: prompt_len - 1] = False
+        # len(prompt_and_outputs_token_ids) = len(label_results) + 1, so we need to subtract 1
+        # the array index access is -1
+        eos_index = len(prompts_and_outputs_token_ids[i]) - 2
+        mask[eos_index] = True  # Include EOS token in response
 
     return {
         "input_ids": input_results,
@@ -159,14 +158,20 @@ def run_get_response_log_probs(
                 we have not masked out the token indices corresponding to the prompt
                 or padding; that is done in the train loop.
     """
-    logits = model(input_ids=input_ids, labels=labels).logits
-    log_p = logits - logits.logsumexp(-1, keepdim=True)
+    # Pass only input_ids, as the model's internal loss calculation isn't used.
+    logits = model(input_ids=input_ids).logits
 
+    # F.cross_entropy is more efficient and numerically stable.
+    # It computes the negative log probability, so we negate the result.
+    # It expects logits in (N, C, ...) format, so we transpose the last two dims.
+    log_p_labels = -F.cross_entropy(logits.transpose(1, 2), labels, reduction="none")
+
+    token_entropy = None
     if return_token_entropy:
         token_entropy = run_compute_entropy(logits)
 
     return {
-        "log_probs": log_p,
+        "log_probs": log_p_labels,
         "token_entropy": token_entropy,
     }
 
@@ -256,10 +261,52 @@ def run_sft_microbatch_train_step(
     policy_log_probs: torch.Tensor,
     response_mask: torch.Tensor,
     gradient_accumulation_steps: int,
-    normalize_constant: int | None = 1.0,
+    normalize_constant: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute the policy gradient loss and backprop its gradients for a microbatch."""
-    raise NotImplementedError
+    """Compute the policy gradient loss and backprop its gradients for a microbatch.
+
+    Executes a forward-and-backward pass on a microbatch.
+
+    Args:
+        policy_log_probs: torch.Tensor of shape (batch_size, sequence_length),
+            per-token log-probabilities from the SFT policy being trained.
+        response_mask: torch.Tensor of shape (batch_size, sequence_length),
+            1 for response tokens, 0 for prompt/padding.
+        gradient_accumulation_steps: int, number of microbatches per optimizer step.
+        normalize_constant: The constant by which to divide the sum.
+            It is fine to leave this as 1.0.
+
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]]:
+            loss: scalar tensor. The microbatch loss, adjusted for gradient accumulation.
+                Returned for logging.
+            metadata: Dict with metadata from the underlying loss call, and any other
+                statistics you might want to log.
+    """
+    # SFT loss is the negative log-likelihood of the response tokens.
+    # We apply the response mask to zero out losses for prompt and padding tokens,
+    # sum the losses across all tokens in the microbatch, and then normalize.
+    per_token_loss = -policy_log_probs
+
+    # A common normalization is to divide by the number of response tokens
+    # (i.e., response_mask.sum()), which gives the mean loss per token.
+    # Here, we use the provided normalize_constant.
+    microbatch_loss = run_masked_normalize(
+        tensor=per_token_loss,
+        mask=response_mask,
+        normalize_constant=normalize_constant,
+        dim=-1,
+    ).mean()
+
+    # Scale the loss for gradient accumulation. This ensures that the gradient
+    # update is equivalent to one for a larger batch size.
+    loss = microbatch_loss / gradient_accumulation_steps
+
+    # Compute gradients for this microbatch.
+    loss.backward()
+
+    # Return the detached loss for logging.
+    return loss.detach(), {}
 
 
 def run_grpo_microbatch_train_step(

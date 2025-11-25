@@ -986,6 +986,8 @@ def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
 def extract_answer(passage: str) -> str:
     if "\\boxed" in passage:
         return extract_boxed_answer(passage)
+    if "####" in passage:
+        return passage.split("####")[-1].strip()
     return None
 
 
@@ -1014,11 +1016,7 @@ def r1_zero_reward_fn(response, ground_truth, fast=True):
         if "\\boxed" in model_answer:
             model_answer = extract_answer(model_answer)
             if model_answer is None:
-                return {
-                    "format_reward": 1.0,
-                    "answer_reward": 0.0,
-                    "reward": 0.0
-                }
+                return {"format_reward": 1.0, "answer_reward": 0.0, "reward": 0.0}
         if isinstance(ground_truth, float) or isinstance(ground_truth, int):
             ground_truth = str(ground_truth)
         if isinstance(ground_truth, str):
@@ -1028,36 +1026,20 @@ def r1_zero_reward_fn(response, ground_truth, fast=True):
             for gt in ground_truth:
                 is_correct |= grade(model_answer, gt, fast)
         if is_correct:
-            return {
-                "format_reward": 1.0,
-                "answer_reward": 1.0,
-                "reward": 1.0
-            }
+            return {"format_reward": 1.0, "answer_reward": 1.0, "reward": 1.0}
         else:
             # Formatted but wrong answer; no format reward to avoid hacking.
-            return {
-                "format_reward": 1.0,
-                "answer_reward": 0.0,
-                "reward": 0.0
-            }
+            return {"format_reward": 1.0, "answer_reward": 0.0, "reward": 0.0}
     else:
         # Unformatted.
-        return {
-            "format_reward": 0.0,
-            "answer_reward": 0.0,
-            "reward": 0.0
-        }
+        return {"format_reward": 0.0, "answer_reward": 0.0, "reward": 0.0}
 
 
 def question_only_reward_fn(response, ground_truth, fast=True):
     model_answer = extract_answer(response)
     if model_answer is None:
         # Cannot even parse anything.
-        return {
-            "format_reward": 0.0,
-            "answer_reward": 0.0,
-            "reward": 0.0
-        }
+        return {"format_reward": 0.0, "answer_reward": 0.0, "reward": 0.0}
     if isinstance(ground_truth, float) or isinstance(ground_truth, int):
         ground_truth = str(ground_truth)
     if isinstance(ground_truth, str):
@@ -1068,15 +1050,7 @@ def question_only_reward_fn(response, ground_truth, fast=True):
             is_correct |= grade(model_answer, gt, fast)
     if is_correct:
         # Correctness reward.
-        return {
-            "format_reward": 1.0,
-            "answer_reward": 1.0,
-            "reward": 1.0
-        }
+        return {"format_reward": 1.0, "answer_reward": 1.0, "reward": 1.0}
     else:
         # Formatted but wrong answer; no format reward to avoid hacking.
-        return {
-            "format_reward": 1.0,
-            "answer_reward": 0.0,
-            "reward": 0.0
-        }
+        return {"format_reward": 1.0, "answer_reward": 0.0, "reward": 0.0}
