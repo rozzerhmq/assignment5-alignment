@@ -30,7 +30,7 @@ load_dotenv()
 
 # --- Configuration ---
 # Hyperparameters for the training process
-MICRO_BATCH_SIZE = 2
+MICRO_BATCH_SIZE = 8
 GRADIENT_ACCUMULATION_STEPS = 8
 TRAINING_SET_SIZE = 2048
 TRAINING_STEPS = TRAINING_SET_SIZE // MICRO_BATCH_SIZE  # Use integer division
@@ -160,7 +160,7 @@ for step, (batch_inputs, batch_labels, batch_response_masks) in enumerate(train_
     if batch_response_masks.sum().item() > 0:
         batch_accumulated_tokens += batch_response_masks.sum().item()
         token_entropy = response_log_p["token_entropy"]
-        batch_token_entropy += (token_entropy * batch_response_masks).sum()
+        batch_token_entropy += (token_entropy * batch_response_masks).sum().item()
 
     # Perform the SFT training step (forward pass, loss calculation, and backward pass)
     # The loss is normalized by the number of response tokens to get the mean loss per token.
