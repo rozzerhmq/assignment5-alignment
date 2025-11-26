@@ -2,6 +2,10 @@ import torch
 import json
 import os
 import wandb
+import argparse
+import subprocess
+import re
+import gc
 from datasets import Dataset, DatasetDict
 from dotenv import load_dotenv
 from tests.adapters import (
@@ -12,6 +16,15 @@ from tests.adapters import (
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# --- Argument Parsing ---
+parser = argparse.ArgumentParser(description="SFT Training Script")
+parser.add_argument(
+    "--run_eval",
+    action="store_true",
+    help="Run evaluation and statistics after training.",
+)
+args = parser.parse_args()
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -21,9 +34,10 @@ MICRO_BATCH_SIZE = 2
 GRADIENT_ACCUMULATION_STEPS = 8
 TRAINING_SET_SIZE = 2048
 TRAINING_STEPS = TRAINING_SET_SIZE // MICRO_BATCH_SIZE  # Use integer division
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 2e-5
 MODEL_NAME = "Qwen/Qwen2.5-Math-1.5B"
 WANDB_PROJECT = "cs336-sft"
+ADAPTER_SAVE_PATH = f"qwen-math-1.5b-sft-{TRAINING_SET_SIZE}-samples-lr{LEARNING_RATE}-mb{MICRO_BATCH_SIZE}-ga{GRADIENT_ACCUMULATION_STEPS}"
 
 
 # --- Device Setup ---
@@ -66,6 +80,10 @@ model = AutoModelForCausalLM.from_pretrained(
 ).to(
     device
 )  # Move model to GPU
+
+# Enable gradient checkpointing to save memory
+model.gradient_checkpointing_enable()
+model.config.use_cache = False
 
 # Load the tokenizer associated with the model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -160,10 +178,6 @@ for step, (batch_inputs, batch_labels, batch_response_masks) in enumerate(train_
     if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
         global_step += 1
 
-        # Step the optimizer and clear gradients
-        optimizer.step()
-        optimizer.zero_grad()
-
         # Log metrics to Weights & Biases
         wandb.log(
             {
@@ -176,6 +190,11 @@ for step, (batch_inputs, batch_labels, batch_response_masks) in enumerate(train_
             },
             step=global_step,
         )
+
+        # Step the optimizer and clear gradients
+        optimizer.step()
+        optimizer.zero_grad()
+
         batch_loss = 0  # Reset batch loss for the next accumulation
         batch_token_entropy = 0  # Reset token entropy for the next accumulation
         batch_accumulated_tokens = 0  # Reset token count for the next accumulation
@@ -183,8 +202,73 @@ for step, (batch_inputs, batch_labels, batch_response_masks) in enumerate(train_
 
 # --- Save Model ---
 # Save the fine-tuned model and tokenizer to a directory
-print("Saving model to qwen-math-1.5b-sft-adapter...")
-model.save_pretrained("qwen-math-1.5b-sft-adapter")
-tokenizer.save_pretrained("qwen-math-1.5b-sft-adapter")
+print(f"Saving model to {ADAPTER_SAVE_PATH}...")
+model.save_pretrained(ADAPTER_SAVE_PATH)
+tokenizer.save_pretrained(ADAPTER_SAVE_PATH)
+
+# Free up memory for evaluation
+del model
+del optimizer
+del tokenizer
+gc.collect()
+torch.cuda.empty_cache()
+
+if args.run_eval:
+    print("Running evaluation...")
+    try:
+        # 1. Run evaluation
+        # Note: We use subprocess to run in a separate process to avoid vLLM/PyTorch context issues
+        # and to match how we run it from the command line.
+        eval_cmd = [
+            "uv",
+            "run",
+            "python",
+            "cs336_alignment/eval.py",
+            "--model",
+            ADAPTER_SAVE_PATH,
+        ]
+        subprocess.run(eval_cmd, check=True)
+
+        # 2. Run stats calculation
+        results_file = f"{ADAPTER_SAVE_PATH}_evaluation_results.jsonl"
+        stats_cmd = [
+            "uv",
+            "run",
+            "python",
+            "cs336_alignment/eval_stats.py",
+            results_file,
+        ]
+        # Capture output to parse metrics
+        result = subprocess.run(stats_cmd, capture_output=True, text=True, check=True)
+        print(result.stdout)
+
+        # 3. Parse metrics from stdout
+        # Expected output format:
+        # Average format reward: 0.9689...
+        # Average answer reward: 0.5003...
+        format_reward_match = re.search(
+            r"Average format reward: ([\d.]+)", result.stdout
+        )
+        answer_reward_match = re.search(
+            r"Average answer reward: ([\d.]+)", result.stdout
+        )
+
+        metrics = {}
+        if format_reward_match:
+            metrics["eval/format_reward"] = float(format_reward_match.group(1))
+        if answer_reward_match:
+            metrics["eval/answer_reward"] = float(answer_reward_match.group(1))
+
+        if metrics:
+            print(f"Logging eval metrics to wandb: {metrics}")
+            wandb.log(metrics)
+        else:
+            print("Warning: Could not parse evaluation metrics from output.")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error during evaluation: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred during evaluation: {e}")
+
 wandb.finish()
 print("Done.")

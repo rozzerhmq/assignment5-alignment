@@ -41,7 +41,7 @@ def evaluate_vllm(
 
         examples = [json.loads(line.strip()) for line in test_file]
 
-        batch_size = 32
+        batch_size = 128
         total_batches = (len(examples) + batch_size - 1) // batch_size
         for i in range(0, len(examples), batch_size):
             print(f"Processing batch {i // batch_size + 1}/{total_batches}")
