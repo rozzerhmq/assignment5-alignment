@@ -167,5 +167,4 @@ cython_debug/
 #.idea/
 .env
 wandb/
-qwen-math-1.5b-sft-adapter/
-qwen-math-1.5b-sft-adapter-full/
+qwen-math-1.5b-sft-*/

@@ -9,12 +9,23 @@ from cs336_alignment.evaluation_result import EvaluationResult
 from cs336_alignment.drgrpo_grader import question_only_reward_fn
 
 
+from typing import Callable, List
+import argparse
+import os
+import re
+import json
+
+from vllm import LLM, SamplingParams
+from cs336_alignment.evaluation_result import EvaluationResult
+from cs336_alignment.drgrpo_grader import question_only_reward_fn
+
+
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], dict[str, float]],
     prompts: List[str],
     eval_sampling_params: SamplingParams,
-) -> None:
+) -> str:
     """
     Evaluate a language model on a list of prompts,
     compute evaluation metrics, and serialize results to disk.
@@ -69,6 +80,29 @@ def evaluate_vllm(
                 )
 
                 outfile.write(json.dumps(result.__dict__) + "\n")
+    
+    return output_filename
+
+
+def run_eval(model_name_or_path: str) -> str:
+    print(f"Loading model: {model_name_or_path}")
+    llm = LLM(
+        model=model_name_or_path,
+        gpu_memory_utilization=0.85,
+        max_model_len=1024,
+    )
+
+    sampling_params = SamplingParams(
+        temperature=1.0, top_p=0.95, max_tokens=1024, stop=["</answer>"]
+    )
+    sampling_params.include_stop_str_in_output = True
+
+    return evaluate_vllm(
+        vllm_model=llm,
+        reward_fn=question_only_reward_fn,
+        prompts=None,
+        eval_sampling_params=sampling_params,
+    )
 
 
 def main():
@@ -81,24 +115,7 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"Loading model: {args.model}")
-    llm = LLM(
-        model=args.model,
-        gpu_memory_utilization=0.85,
-        max_model_len=1024,
-    )
-
-    sampling_params = SamplingParams(
-        temperature=1.0, top_p=0.95, max_tokens=1024, stop=["</answer>"]
-    )
-    sampling_params.include_stop_str_in_output = True
-
-    evaluate_vllm(
-        vllm_model=llm,
-        reward_fn=question_only_reward_fn,
-        prompts=None,
-        eval_sampling_params=sampling_params,
-    )
+    run_eval(args.model)
 
 
 if __name__ == "__main__":

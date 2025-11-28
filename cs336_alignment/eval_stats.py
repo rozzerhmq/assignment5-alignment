@@ -6,20 +6,22 @@ answer_reward_column = "answer_reward"
 reward_column = "reward"
 
 
-def read_results(filename):
+def calculate_stats(filename):
     df = pd.read_json(filename, lines=True)
 
     rewards_df = pd.json_normalize(df["rewards"])
     df = pd.concat([df, rewards_df], axis=1)
     df = df.drop(columns=["rewards"])
 
-    print(df)
-    print(f"Number of examples: {len(df)}")
-    print(f"Number foramt rewards: {df[format_reward_column].sum()}")
-    print(f"Number answer rewards: {df[answer_reward_column].sum()}")
-    print(f"Average format reward: {df[format_reward_column].mean()}")
-    print(f"Average answer reward: {df[answer_reward_column].mean()}")
-    print(f"Average reward: {df[reward_column].mean()}")
+    metrics = {
+        "num_examples": len(df),
+        "num_format_rewards": int(df[format_reward_column].sum()),
+        "num_answer_rewards": int(df[answer_reward_column].sum()),
+        "avg_format_reward": float(df[format_reward_column].mean()),
+        "avg_answer_reward": float(df[answer_reward_column].mean()),
+        "avg_reward": float(df[reward_column].mean()),
+    }
+    return metrics
 
 
 def main():
@@ -27,7 +29,15 @@ def main():
         filename = sys.argv[1]
     else:
         filename = "evaluation_results.jsonl"
-    read_results(filename)
+    
+    metrics = calculate_stats(filename)
+    
+    print(f"Number of examples: {metrics['num_examples']}")
+    print(f"Number foramt rewards: {metrics['num_format_rewards']}")
+    print(f"Number answer rewards: {metrics['num_answer_rewards']}")
+    print(f"Average format reward: {metrics['avg_format_reward']}")
+    print(f"Average answer reward: {metrics['avg_answer_reward']}")
+    print(f"Average reward: {metrics['avg_reward']}")
 
 if __name__ == "__main__":
     main()
