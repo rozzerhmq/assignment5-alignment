@@ -34,7 +34,9 @@ def evaluate_vllm(
     # Load the R1 Zero prompt template to format questions
     r1_zero_prompt, r1_zero_answer_template = load_r1_zero_templates()
 
-    print(f"Starting evaluation on {len(dataset)} examples. Results will be saved to {output_filename}.")
+    print(
+        f"Starting evaluation on {len(dataset)} examples. Results will be saved to {output_filename}."
+    )
 
     with open(output_filename, "w") as outfile:
         # Process the dataset in batches for efficiency
@@ -43,10 +45,10 @@ def evaluate_vllm(
 
         for i in range(0, len(dataset), batch_size):
             print(f"Processing batch {i // batch_size + 1}/{total_batches}")
-            
+
             # Select the current batch of examples
             batch_examples = dataset.select(range(i, min(i + batch_size, len(dataset))))
-            
+
             # Format prompts: Insert the question into the R1 Zero template
             model_prompts = [
                 re.sub(r"\{question\}", example["question"], r1_zero_prompt)
@@ -58,7 +60,9 @@ def evaluate_vllm(
                 model_prompts, sampling_params=eval_sampling_params
             )
 
-            assert len(response_outputs) == len(batch_examples), "Mismatch between prompts and outputs"
+            assert len(response_outputs) == len(
+                batch_examples
+            ), "Mismatch between prompts and outputs"
 
             # Process each generated response
             for example, response_output in zip(batch_examples, response_outputs):
@@ -101,8 +105,8 @@ def run_eval(model_name_or_path: str, dataset: Dataset = None) -> str:
         str: Path to the results file.
     """
     print(f"Loading model: {model_name_or_path}")
-    
-    # Initialize VLLM. 
+
+    # Initialize VLLM.
     # gpu_memory_utilization is set to 0.85 to leave some room for overhead.
     llm = LLM(
         model=model_name_or_path,
@@ -118,7 +122,6 @@ def run_eval(model_name_or_path: str, dataset: Dataset = None) -> str:
     )
     sampling_params.include_stop_str_in_output = True
 
-    return evaluate_vllm(
     return evaluate_vllm(
         vllm_model=llm,
         reward_fn=r1_zero_reward_fn,
