@@ -1,6 +1,32 @@
 import os
 
 
+def load_distill_templates():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    prompt_path = os.path.join(script_dir, "prompts", "distill.prompt")
+
+    with open(prompt_path, "r") as f:
+        distill_prompt_template = f.read()
+
+    return distill_prompt_template
+
+
+def format_distill_example(question: str):
+    """
+    Formats a single GSM8K example into the distillation prompt format.
+
+    This function combines the question with the distillation prompt template.
+
+    Args:
+        question (str): The input question.
+
+    Returns:
+        str: The fully formatted prompt string.
+    """
+    prompt_template = load_distill_templates()
+    return prompt_template.format(question=question)
+
+
 def load_r1_zero_templates():
     """
     Loads the R1 Zero prompt template from the file system and defines the answer template.
@@ -15,7 +41,7 @@ def load_r1_zero_templates():
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     prompt_path = os.path.join(script_dir, "prompts", "r1_zero.prompt")
-    
+
     with open(prompt_path, "r") as f:
         r1_zero_prompt_template = f.read()
 

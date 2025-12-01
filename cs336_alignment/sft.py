@@ -20,8 +20,7 @@ from cs336_alignment.prompt_utils import format_r1_zero_example
 # Hyperparameters for the training process
 MICRO_BATCH_SIZE = 8
 GRADIENT_ACCUMULATION_STEPS = 8
-TRAINING_SET_SIZE = 7473
-TRAINING_SET_SIZE = 7473
+TRAINING_SET_SIZE = 2048
 TRAINING_STEPS = TRAINING_SET_SIZE // MICRO_BATCH_SIZE  # Use integer division
 LEARNING_RATE = 2e-5
 MODEL_NAME = "Qwen/Qwen2.5-Math-1.5B"

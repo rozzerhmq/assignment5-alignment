@@ -168,3 +168,4 @@ cython_debug/
 .env
 wandb/
 qwen-math-1.5b-*/
+unsloth*

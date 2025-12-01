@@ -110,7 +110,6 @@ def run_eval(model_name_or_path: str, dataset: Dataset = None) -> str:
     # gpu_memory_utilization is set to 0.85 to leave some room for overhead.
     llm = LLM(
         model=model_name_or_path,
-        model=model_name_or_path,
         gpu_memory_utilization=0.85,
         max_model_len=1024,
     )
