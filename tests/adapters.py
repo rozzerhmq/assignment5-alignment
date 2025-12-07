@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import numpy as np
 from typing import Any, Callable, Literal
 
 import torch
@@ -118,7 +119,30 @@ def run_compute_group_normalized_rewards(
                 You may choose what you wish to log here
                 (some statistics of the rewards, etc.).
     """
-    raise NotImplementedError
+    raw_rewards = np.array(
+        [
+            float(reward_fn(truth, response)["reward"])
+            for truth, response in zip(repeated_ground_truths, rollout_responses)
+        ]
+    )
+
+    # Means of all groups
+    group_means = [np.mean(group) for group in np.array_split(raw_rewards, group_size)]
+    # Stds of all groups
+    group_stds = [np.std(group) for group in np.array_split(raw_rewards, group_size)]
+
+    advantages = []
+    for i in range(len(raw_rewards)):
+        group_number = i // group_size
+        mean = group_means[group_number]
+        std = group_stds[group_number]
+
+        if normalize_by_std:
+            advantages.append((raw_rewards[i] - mean) / (std + advantage_eps))
+        else:
+            advantages.append(raw_rewards[i] - mean)
+
+    return torch.tensor(advantages), torch.tensor(raw_rewards), {}
 
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -192,7 +216,7 @@ def run_compute_naive_policy_gradient_loss(
         torch.Tensor of shape (batch_size, sequence_length):
             the policy gradient per-token loss.
     """
-    raise NotImplementedError
+    return -raw_rewards_or_advantages * policy_log_probs
 
 
 def run_compute_grpo_clip_loss(
@@ -219,7 +243,11 @@ def run_compute_grpo_clip_loss(
             dict[str, torch.Tensor]: metadata for the GRPO-Clip loss
                 (used to compute clip fraction).
     """
-    raise NotImplementedError
+    loss = -advantages * policy_log_probs / old_log_probs
+    clipped_loss = loss.clamp(1 - cliprange, 1 + cliprange)
+    clipped = loss > 1 + cliprange or loss < 1 - cliprange
+
+    return clipped_loss, {"clipped": clipped}
 
 
 def run_compute_policy_gradient_loss(
@@ -233,7 +261,16 @@ def run_compute_policy_gradient_loss(
     """
     Wrapper that delegates to the appropriate policy gradient loss function above.
     """
-    raise NotImplementedError
+    if loss_type == "no_baseline":
+        return run_compute_naive_policy_gradient_loss(raw_rewards, policy_log_probs), {}
+    elif loss_type == "reinforce_with_baseline":
+        return run_compute_naive_policy_gradient_loss(advantages, policy_log_probs), {}
+    elif loss_type == "grpo_clip":
+        return run_compute_grpo_clip_loss(
+            advantages, policy_log_probs, old_log_probs, cliprange
+        )
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
 
 
 def run_masked_mean(
@@ -254,7 +291,7 @@ def run_masked_mean(
         torch.Tensor, the mean of the tensor along the specified
             dimension, considering only the elements with mask value 1.
     """
-    raise NotImplementedError
+    return (tensor * mask).mean(dim=dim)
 
 
 def run_sft_microbatch_train_step(
