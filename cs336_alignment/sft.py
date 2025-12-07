@@ -1,12 +1,9 @@
 import torch
-import json
 import os
 import wandb
 import argparse
-import subprocess
-import re
 import gc
-from datasets import Dataset, DatasetDict
+from datasets import Dataset, load_dataset
 from dotenv import load_dotenv
 from tests.adapters import (
     run_tokenize_prompt_and_output,
@@ -17,90 +14,112 @@ from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 from cs336_alignment.eval import run_eval
 from cs336_alignment.eval_stats import calculate_stats
+from cs336_alignment.prompt_utils import format_r1_zero_example
 
 # --- Configuration ---
 # Hyperparameters for the training process
 MICRO_BATCH_SIZE = 8
 GRADIENT_ACCUMULATION_STEPS = 8
-TRAINING_SET_SIZE = 7473
+TRAINING_SET_SIZE = 2048
 TRAINING_STEPS = TRAINING_SET_SIZE // MICRO_BATCH_SIZE  # Use integer division
 LEARNING_RATE = 2e-5
 MODEL_NAME = "Qwen/Qwen2.5-Math-1.5B"
 WANDB_PROJECT = "cs336-sft"
-ADAPTER_SAVE_PATH = f"qwen-math-1.5b-sft-{TRAINING_SET_SIZE}-samples-lr{LEARNING_RATE}-mb{MICRO_BATCH_SIZE}-ga{GRADIENT_ACCUMULATION_STEPS}"
+ADAPTER_SAVE_PATH = f"qwen-math-1.5b-cot-sft-{TRAINING_SET_SIZE}-samples-lr{LEARNING_RATE}-mb{MICRO_BATCH_SIZE}-ga{GRADIENT_ACCUMULATION_STEPS}"
 
 
-def train_model(args) -> str:
+def prepare_training_data(dataset: Dataset, tokenizer: AutoTokenizer) -> TensorDataset:
+    """
+    Prepares the training dataset for Supervised Fine-Tuning (SFT).
+
+    This function performs the following steps:
+    1. Shuffles the dataset and selects a subset of the specified size.
+    2. Formats each example into a prompt and answer pair using the R1 Zero template.
+    3. Tokenizes the prompts and answers to create input IDs, labels, and response masks.
+    4. Wraps the tokenized data into a PyTorch TensorDataset for efficient loading.
+
+    Args:
+        dataset (Dataset): The raw Hugging Face dataset.
+        tokenizer (AutoTokenizer): The tokenizer to use for encoding text.
+
+    Returns:
+        TensorDataset: A dataset containing input_ids, labels, and response_mask tensors.
+    """
+    # Create a smaller, shuffled subset of the training data for fine-tuning
+    training_data = dataset.shuffle(seed=42).select(range(TRAINING_SET_SIZE))
+
+    # Extract and format prompts and answers from the dataset
+    prompts = []
+    answers = []
+    for example in training_data:
+        question = example["question"]
+        raw_answer = example["answer"]
+
+        # Format the question and answer using the specific template (e.g., R1 Zero)
+        prompt, answer = format_r1_zero_example(question, raw_answer)
+
+        prompts.append(prompt)
+        answers.append(answer)
+
+    # Tokenize the formatted prompts and answers.
+    # This helper function handles the creation of 'labels' (shifted input_ids)
+    # and 'response_mask' (1 for response tokens, 0 otherwise).
+    tokenized_data = run_tokenize_prompt_and_output(prompts, answers, tokenizer)
+
+    return TensorDataset(
+        tokenized_data["input_ids"],
+        tokenized_data["labels"],
+        tokenized_data["response_mask"],
+    )
+
+
+def train_model(train_dataset: Dataset) -> str:
+    """
+    Runs the Supervised Fine-Tuning (SFT) training loop.
+
+    Args:
+        train_dataset (Dataset): The dataset to use for training.
+
+    Returns:
+        str: The path where the fine-tuned model is saved.
+    """
     # --- Device Setup ---
     # Set the device to CUDA (GPU) if available, otherwise fall back to CPU
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     # --- Model and Tokenizer Setup ---
-    # Load the pre-trained model and move it to the selected device.
-    # Using bfloat16 for mixed-precision training and flash_attention_2 for efficiency on supported GPUs.
+    # Load the pre-trained model.
+    # We use bfloat16 for mixed-precision training which improves memory efficiency and speed
+    # on compatible GPUs (e.g., Ampere architecture), and Flash Attention 2 for faster attention calculation.
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
-    ).to(
-        device
-    )  # Move model to GPU
+    ).to(device)
 
-    # Enable gradient checkpointing to save memory
+    # Enable gradient checkpointing to reduce memory usage by trading compute for memory.
+    # This allows training larger models or using larger batch sizes.
     model.gradient_checkpointing_enable()
-    model.config.use_cache = False
+    model.config.use_cache = False  # Disable KV cache as it's not needed for training
 
     # Load the tokenizer associated with the model
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    # --- Data Loading and Preparation ---
-    # Construct absolute paths to data files to ensure the script is runnable from any directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(script_dir, "..", "data", "gsm8k")
+    # --- Data Preparation ---
+    # Process raw data into tensor format ready for the model
+    tensor_dataset = prepare_training_data(train_dataset, tokenizer)
 
-    # Manually load the JSONL data
-    with open(os.path.join(data_dir, "train.jsonl"), "r") as f:
-        train_data_json = [json.loads(line) for line in f]
-    with open(os.path.join(data_dir, "test.jsonl"), "r") as f:
-        test_data_json = [json.loads(line) for line in f]
-
-    # Create Hugging Face Dataset objects
-    train_dataset = Dataset.from_list(train_data_json)
-    test_dataset = Dataset.from_list(test_data_json)
-
-    # Combine into a DatasetDict
-    dataset = DatasetDict(
-        {
-            "train": train_dataset,
-            "test": test_dataset,
-        }
-    )
-
-    # Create a smaller, shuffled subset of the training data for fine-tuning
-    training_data = dataset["train"].shuffle(seed=42).select(range(TRAINING_SET_SIZE))
-
-    # Extract prompts and answers from the dataset
-    prompts = [example["question"] for example in training_data]
-    answers = [example["answer"] for example in training_data]
-
-    # Tokenize the prompts and answers using the adapter function
-    tokenized_data = run_tokenize_prompt_and_output(prompts, answers, tokenizer)
-
-    # Convert the dictionary of tokenized data into a PyTorch TensorDataset
-    input_ids = tokenized_data["input_ids"]
-    labels = tokenized_data["labels"]
-    response_mask = tokenized_data["response_mask"]
-    tensor_dataset = TensorDataset(input_ids, labels, response_mask)
-
-    # Create a DataLoader to handle batching and shuffling
+    # Create a DataLoader to handle batching and shuffling during training
     train_loader = DataLoader(tensor_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=True)
 
     # --- Optimizer & Scheduler Setup ---
-    # Initialize the AdamW optimizer with the model's parameters and a learning rate
+    # Initialize the AdamW optimizer.
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
-    # Calculate total optimization steps (taking gradient accumulation into account)
+    # Calculate total optimization steps.
+    # We divide by GRADIENT_ACCUMULATION_STEPS because the optimizer only steps once
+    # per accumulated batch, not per micro-batch.
     num_update_steps = TRAINING_STEPS // GRADIENT_ACCUMULATION_STEPS
 
     scheduler = get_scheduler(
@@ -111,17 +130,17 @@ def train_model(args) -> str:
     )
 
     # --- Training Loop ---
-    # Set the model to training mode
     model.train()
     global_step = 0
     batch_loss = 0
     batch_token_entropy = 0
-    # Track total valid tokens to do a weighted average (More mathematically precise)
+    # Track total valid tokens to calculate a weighted average of entropy, which is mathematically more precise
     batch_accumulated_tokens = 0
+
     for step, (batch_inputs, batch_labels, batch_response_masks) in enumerate(
         train_loader
     ):
-        if step >= TRAINING_STEPS:  # Ensure loop stops after one epoch
+        if step >= TRAINING_STEPS:
             break
         print(f"Step {step+1}/{TRAINING_STEPS}")
 
@@ -130,19 +149,22 @@ def train_model(args) -> str:
         batch_labels = batch_labels.to(device)
         batch_response_masks = batch_response_masks.to(device)
 
-        # Get the log probabilities of the correct tokens in the response
+        # Get the log probabilities of the correct tokens in the response.
+        # We also calculate token entropy to monitor the model's uncertainty.
         response_log_p = run_get_response_log_probs(
             model, batch_inputs, batch_labels, return_token_entropy=True
         )
 
+        # Accumulate metrics for logging
         if batch_response_masks.sum().item() > 0:
             batch_accumulated_tokens += batch_response_masks.sum().item()
             token_entropy = response_log_p["token_entropy"]
             # Detach entropy to prevent graph retention and memory leaks
             batch_token_entropy += (token_entropy * batch_response_masks).sum().item()
 
-        # Perform the SFT training step (forward pass, loss calculation, and backward pass)
-        # The loss is normalized by the number of response tokens to get the mean loss per token.
+        # Perform the SFT training step (forward pass, loss calculation, and backward pass).
+        # The loss returned is scaled by 1/GRADIENT_ACCUMULATION_STEPS inside the function
+        # to ensure the magnitude of the gradients is correct when we step the optimizer.
         loss, metadata = run_sft_microbatch_train_step(
             response_log_p["log_probs"],
             batch_response_masks,
@@ -150,10 +172,10 @@ def train_model(args) -> str:
             batch_response_masks.sum(),  # normalize_constant is the sum of tokens for mean loss
         )
 
-        # Accumulate raw loss (mean per token)
+        # Accumulate raw loss (mean per token) for logging purposes
         batch_loss += loss.item()
 
-        # Perform an optimizer step after accumulating gradients for the specified number of steps
+        # Perform an optimizer step only after accumulating gradients for the specified number of micro-batches
         if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
             global_step += 1
 
@@ -171,22 +193,23 @@ def train_model(args) -> str:
                 step=global_step,
             )
 
-            # Step the optimizer and clear gradients
+            # Step the optimizer and clear gradients for the next accumulation cycle
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
 
-            batch_loss = 0  # Reset batch loss for the next accumulation
-            batch_token_entropy = 0  # Reset token entropy for the next accumulation
-            batch_accumulated_tokens = 0  # Reset token count for the next accumulation
+            # Reset accumulation variables
+            batch_loss = 0
+            batch_token_entropy = 0
+            batch_accumulated_tokens = 0
 
     # --- Save Model ---
-    # Save the fine-tuned model and tokenizer to a directory
+    # Save the fine-tuned model and tokenizer to disk for later evaluation or usage
     print(f"Saving model to {ADAPTER_SAVE_PATH}...")
     model.save_pretrained(ADAPTER_SAVE_PATH)
     tokenizer.save_pretrained(ADAPTER_SAVE_PATH)
 
-    # Free up memory for evaluation
+    # Free up memory explicitly to avoid OOM issues during subsequent evaluation
     del model
     del optimizer
     del tokenizer
@@ -196,11 +219,11 @@ def train_model(args) -> str:
     return ADAPTER_SAVE_PATH
 
 
-def evaluate_model(adapter_save_path: str):
+def evaluate_model(adapter_save_path: str, test_dataset: Dataset):
     print("Running evaluation...")
     try:
         # 1. Run evaluation (Modular)
-        results_filename = run_eval(adapter_save_path)
+        results_filename = run_eval(adapter_save_path, dataset=test_dataset)
 
         # 2. Run stats calculation (Modular)
         stats = calculate_stats(results_filename)
@@ -263,10 +286,15 @@ def main():
             name=f"sft-run-{wandb.util.generate_id()}",
         )
 
+    # --- Data Loading ---
+    # Assume the script is run from the project root
+    data_dir = "data/gsm8k"
+    dataset = load_dataset("json", data_dir=data_dir)
+
     # --- Orchestration ---
     adapter_save_path_from_train = None
     if args.run_train:
-        adapter_save_path_from_train = train_model(args)
+        adapter_save_path_from_train = train_model(dataset["train"])
 
     if args.run_eval:
         # If train was run, use the path from train_model, otherwise use the globally defined path
@@ -275,7 +303,7 @@ def main():
             if adapter_save_path_from_train
             else ADAPTER_SAVE_PATH
         )
-        evaluate_model(eval_model_path)
+        evaluate_model(eval_model_path, dataset["test"])
 
     if args.run_train or args.run_eval:
         wandb.finish()

@@ -1,14 +1,24 @@
 import pandas as pd
-import sys
+import argparse
 
 format_reward_column = "format_reward"
 answer_reward_column = "answer_reward"
 reward_column = "reward"
 
 
-def calculate_stats(filename):
+def calculate_stats(filename: str) -> dict:
+    """
+    Calculates evaluation statistics from a JSONL results file.
+
+    Args:
+        filename (str): Path to the evaluation results file.
+
+    Returns:
+        dict: A dictionary containing aggregated metrics.
+    """
     df = pd.read_json(filename, lines=True)
 
+    # Flatten the rewards dictionary column
     rewards_df = pd.json_normalize(df["rewards"])
     df = pd.concat([df, rewards_df], axis=1)
     df = df.drop(columns=["rewards"])
@@ -22,22 +32,36 @@ def calculate_stats(filename):
         "avg_reward": float(df[reward_column].mean()),
     }
     return metrics
+    metrics = {
+        "num_examples": len(df),
+        "num_format_rewards": int(df[format_reward_column].sum()),
+        "num_answer_rewards": int(df[answer_reward_column].sum()),
+        "avg_format_reward": float(df[format_reward_column].mean()),
+        "avg_answer_reward": float(df[answer_reward_column].mean()),
+        "avg_reward": float(df[reward_column].mean()),
+    }
+    return metrics
 
 
 def main():
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
-    else:
-        filename = "evaluation_results.jsonl"
-    
-    metrics = calculate_stats(filename)
-    
+    parser = argparse.ArgumentParser(description="Calculate evaluation statistics.")
+    parser.add_argument(
+        "filename",
+        nargs="?",
+        default="evaluation_results.jsonl",
+        help="Path to the evaluation results JSONL file.",
+    )
+    args = parser.parse_args()
+
+    metrics = calculate_stats(args.filename)
+
     print(f"Number of examples: {metrics['num_examples']}")
-    print(f"Number foramt rewards: {metrics['num_format_rewards']}")
-    print(f"Number answer rewards: {metrics['num_answer_rewards']}")
+    print(f"Number of format rewards: {metrics['num_format_rewards']}")
+    print(f"Number of answer rewards: {metrics['num_answer_rewards']}")
     print(f"Average format reward: {metrics['avg_format_reward']}")
     print(f"Average answer reward: {metrics['avg_answer_reward']}")
     print(f"Average reward: {metrics['avg_reward']}")
+
 
 if __name__ == "__main__":
     main()
