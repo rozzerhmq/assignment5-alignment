@@ -121,28 +121,20 @@ def run_compute_group_normalized_rewards(
     """
     raw_rewards = np.array(
         [
-            float(reward_fn(truth, response)["reward"])
+            float(reward_fn(response, truth)["reward"])
             for truth, response in zip(repeated_ground_truths, rollout_responses)
         ]
     )
 
-    # Means of all groups
-    group_means = [np.mean(group) for group in np.array_split(raw_rewards, group_size)]
-    # Stds of all groups
-    group_stds = [np.std(group) for group in np.array_split(raw_rewards, group_size)]
+    grouped_rewards = raw_rewards.reshape(-1, group_size)
+    means = grouped_rewards.mean(axis=1, keepdims=True)
+    advantages = grouped_rewards - means
 
-    advantages = []
-    for i in range(len(raw_rewards)):
-        group_number = i // group_size
-        mean = group_means[group_number]
-        std = group_stds[group_number]
+    if normalize_by_std:
+        stds = grouped_rewards.std(axis=1, ddof=1, keepdims=True)
+        advantages /= stds + advantage_eps
 
-        if normalize_by_std:
-            advantages.append((raw_rewards[i] - mean) / (std + advantage_eps))
-        else:
-            advantages.append(raw_rewards[i] - mean)
-
-    return torch.tensor(advantages), torch.tensor(raw_rewards), {}
+    return torch.tensor(advantages.flatten()), torch.tensor(raw_rewards), {}
 
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -243,11 +235,32 @@ def run_compute_grpo_clip_loss(
             dict[str, torch.Tensor]: metadata for the GRPO-Clip loss
                 (used to compute clip fraction).
     """
-    loss = -advantages * policy_log_probs / old_log_probs
-    clipped_loss = loss.clamp(1 - cliprange, 1 + cliprange)
-    clipped = loss > 1 + cliprange or loss < 1 - cliprange
+    # Calculate the ratio of the current policy's probability to the old policy's probability.
+    # This is a key component of PPO-like algorithms.
+    normal_ratio = torch.exp(policy_log_probs - old_log_probs)
 
-    return clipped_loss, {"clipped": clipped}
+    # Calculate the unclipped objective function: ratio * advantage.
+    # This is the standard policy gradient objective.
+    normal_objective = advantages * normal_ratio
+
+    # Clip the ratio to be within [1 - cliprange, 1 + cliprange].
+    # This prevents excessively large policy updates.
+    clipped_ratio = normal_ratio.clamp(min=1 - cliprange, max=1 + cliprange)
+
+    # Calculate the clipped objective function: clipped_ratio * advantage.
+    clipped_objective = advantages * clipped_ratio
+
+    # The GRPO-Clip loss takes the minimum of the normal and clipped objectives.
+    # The negative sign converts this objective into a loss to be minimized.
+    grpo_clip_loss = -torch.min(normal_objective, clipped_objective)
+
+    # Determine which elements (tokens) were "clipped" in effect.
+    # This indicates cases where the unclipped objective was larger (more beneficial
+    # if advantage is positive, or less detrimental if advantage is negative)
+    # than the value chosen by the clipping mechanism.
+    clipped = normal_objective > grpo_clip_loss
+
+    return grpo_clip_loss, {"clipped": clipped}
 
 
 def run_compute_policy_gradient_loss(
@@ -291,7 +304,8 @@ def run_masked_mean(
         torch.Tensor, the mean of the tensor along the specified
             dimension, considering only the elements with mask value 1.
     """
-    return (tensor * mask).mean(dim=dim)
+    masked_x = tensor * mask
+    return masked_x.sum(dim=dim) / mask.sum(dim=dim)
 
 
 def run_sft_microbatch_train_step(
